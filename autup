@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+##########################################################################
+##      ___           ___           ___           ___           ___    
+##     /\  \         /\__\         /\  \         /\__\         /\  \    
+##    /::\  \       /:/  /         \:\  \       /:/  /        /::\  \   
+##   /:/\:\  \     /:/  /           \:\  \     /:/  /        /:/\:\  \  
+##  /::\~\:\  \   /:/  /  ___       /::\  \   /:/  /  ___   /::\~\:\  \ 
+## /:/\:\ \:\__\ /:/__/  /\__\     /:/\:\__\ /:/__/  /\__\ /:/\:\ \:\__\
+## \/__\:\/:/  / \:\  \ /:/  /    /:/  \/__/ \:\  \ /:/  / \/__\:\/:/  /
+##      \::/  /   \:\  /:/  /    /:/  /       \:\  /:/  /       \::/  / 
+##      /:/  /     \:\/:/  /     \/__/         \:\/:/  /         \/__/  
+##     /:/  /       \::/  /                     \::/  /                 
+##     \/__/         \/__/                       \/__/                  
+##########################################################################
+#
+# A simple script to automatically update all packages
+# and remove unused dependencies.
+#
+# Currently supports pacman, apt, apk, and dnf.
+#
+##########################################################################
+
+##########################################################################
+#################
+# Configuration #
+#################
+
+#Default Run State
+# Determines how the script is run when invoked.
+
+# Possible options are:
+# prompt - Prompts the user
+# update - updates the available packages
+# full - Fully updates and cleans the system
+readonly default="prompt"
+
+# Determines whether logging is done.
+# Possible options are:
+# on - enables logging of updated packages
+# off - disables logging of updated packages
+readonly logging="on"
+
+##########################################################################
+
+set -eu
+
+DATE="$(date +%F)" && declare -r DATE
+TIME="$(date +%H:%M)" && declare -r TIME
+TEMP="$(/bin/mktemp)" && declare -r TEMP
+declare -i PKGS=0
+
+##########################################################################
+#############
+# Functions
+draw_line() { echo -e "----------------------------------------------------------------------"; }
+draw_header() {
+echo -e "
+----------------------------------------------------------------------
+[${DATE}--${TIME}] ${1}: ${PKGS}
+----------------------------------------------------------------------"
+}
+
+clean_up_time () { rm -rf "${TEMP}"; }
+say_err() { printf "%s\n" "Error: $1" >&2 && exit 1; }
+say_msg() { printf "%s\n" "$1"; }
+the_end() { printf "%s\n" "That's all for now then. Have a great day! :)" && clean_up_time && exit 0; }
+try_again() { [[ "$?" -ne 0 ]] && "$1"; }
+set_pkgs() { PKGS=$(wc -l < "${TEMP}"); }
+list_temp() { cat "${TEMP}"; }
+list_updates() {
+if [[ "${PKGS}" -eq 0 ]]; then say_msg "No updates available."
+else draw_header "Updates Available" && list_temp && draw_line
+fi
+}
+
+#########################
+# Main Logging Funtions
+log_updates() {
+if [[ "${PKGS}" -eq 0 ]]; then { say_msg "[${DATE}--${TIME}] No packages updated."; } >> "${LOGS}"
+else { draw_header "Packages Updated" && list_temp && draw_line; } >> "${LOGS}"
+fi
+}
+
+write_logs() {
+declare -rx LOGS="${HOME}/update.log"
+[[ ! -a "${LOGS}" ]] && touch "${LOGS}"
+log_updates
+}
+
+logging() {
+if [[ "${logging}" == "on" ]]; then "${1}" && write_logs
+fi
+}
+
+############################
+# Log Formatting Functions
+pac_format_logs() { pacman -Qu 2> /dev/null | awk '{print $1" = ["$2"] -> ["$4"]"}' > "${TEMP}" && set_pkgs; }
+apt_format_logs() { apt list --upgradable 2> /dev/null | awk '/Listing/{next} split($1, pkg, "/", seps){print pkg[1]" = ["$6" -> ["$2"]"}' > "${TEMP}" && set_pkgs; }
+apk_format_logs() { apk list -u 2> /dev/null | awk 'match($0, /\:/){print "["substr($0, RSTART+2)" -> ["$1"]"}' > "${TEMP}" && set_pkgs; }
+dnf_format_logs() { dnf check-update 2> /dev/null > "${TEMP}" && set_pkgs; }
+
+#############################
+# Database Update Functions
+pac_update_db() { $PERMS pacman -Sy &> /dev/null; }
+apt_update_db() { $PERMS apt update &> /dev/null; }
+apk_update_db() { $PERMS apk update &> /dev/null; }
+dnf_update_db() { $PERMS dnf check-update &> /dev/null; }
+
+############################
+# Package Update Functions
+pac_update_pkgs() { $PERMS pacman -Su --noconfirm &> /dev/null; }
+apt_update_pkgs() { $PERMS apt upgrade -y &> /dev/null; }
+apk_update_pkgs() { $PERMS apk upgrade &> /dev/null; }
+dnf_update_pkgs() { $PERMS dnf -y upgrade &> /dev/null; }
+
+############################
+# Remove Orphans Functions
+pac_remove_orphans() { $PERMS pacman -Rns --noconfirm "$(pacman -Qtdq)" &> /dev/null; }
+apt_remove_orphans() { $PERMS apt autoremove -y &> /dev/null; }
+apk_remove_orphans() { $PERMS apk clean &> /dev/null; }
+dnf_remove_orphans() { $PERMS dnf -y autoremove &> /dev/null; }
+
+####################
+# Main Check Logic
+check_update() {
+say_msg "Checking for updates..."
+case $PKGMAN in
+pac) pac_update_db; pac_format_logs; list_updates;;
+apt) apt_update_db; apt_format_logs; list_updates;;
+apk) apk_update_db; apk_format_logs; list_updates;;
+dnf) dnf_update_db; dnf_format_logs; list_updates;;
+esac
+}
+
+#####################
+# Main Update Logic
+update_only() {
+say_msg "Updating packages..."
+case $PKGMAN in
+pac) pac_update_db; logging pac_format_logs; pac_update_pkgs;;
+apt) apt_update_db; logging apt_format_logs; apt_update_pkgs;;
+apk) apk_update_db; logging apk_format_logs; apk_update_pkgs;;
+dnf) dnf_update_db; logging dnf_format_logs; dnf_update_pkgs;;
+esac
+say_msg "Packages updated."
+}
+
+####################
+# Main Clean Logic
+clean_up() {
+say_msg "Removing orphans..."
+case $PKGMAN in
+pac) pac_remove_orphans;;
+apt) apt_remove_orphans;;
+apk) apk_remove_orphans;;
+dnf) dnf_remove_orphans;;
+esac
+say_msg "Orphans removed."
+}
+
+###################
+# Main Full Logic
+full_update() {
+case $PKGMAN in
+pac) pac_update; pac_clean;;
+apt) apt_update; apt_clean;;
+apk) apk_update; apk_clean;;
+dnf) dnf_update; dnf_clean;;
+esac
+}
+
+#####################
+# Main Prompt Logic
+prompt() {
+echo -e "What would you like to do?
+
+[1] - Check for Updates
+[2] - Update Packages
+[3] - Remove Orphans
+[4] - Update Packages & Remove Orphans
+[0] - Exit
+"
+read -rp "Choice: " choice
+case $choice in
+1) clear; check_update; prompt;;
+2) clear; update_only; prompt;;
+3) clear; clean_up; prompt;;
+4) clear; full_update; prompt;;
+0) clear; the_end;;
+*) clear; say_msg "Huh? Let's try that again."; prompt;;
+esac
+}
+
+####################
+# Main Script Logic
+main() {
+
+trap 'rm -rf "${TEMP}" && exit' EXIT HUP QUIT TERM INT ABRT
+
+if [[ -a /etc/pacman.conf ]]; then declare -rx PKGMAN="pac"
+elif [[ -d /etc/apt ]]; then declare -rx PKGMAN="apt"
+elif [[ -d /etc/apk ]]; then declare -rx PKGMAN="apk"
+elif [[ -d /etc/dnf ]]; then declare -rx PKGMAN="dnf"
+else say_err "No package manager found."
+fi
+
+if [[ -d /etc/doas.d ]]; then declare -rx PERMS="doas"
+else declare -rx PERMS="sudo"
+fi
+
+case $default in
+prompt) clear; prompt;;
+update) clear; update_only;;
+full) clear; full_update;;
+*) say_err "The script is misconfigured. Fix it and try again.";;
+esac
+}
+
+##########################################################################
+################
+# Script Start
+main
+clean_up
