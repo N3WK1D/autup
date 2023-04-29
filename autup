@@ -1,151 +1,111 @@
 #!/bin/bash
-##########################################################################
-# Configuration
-################
-# Logging
-# Possible options are:
-# on - enables logging of updated packages
-# off - disables logging
-logging="on"
-##########################################################################
+
 set -eu
-declare TEMP_LOG="$(/bin/mktemp)"
-declare -i PKGS=0
+
 #############
 # Functions
-say_err() { gum style --foreground 202 "Error: $1" >&2 && exit 1; }
-say_msg() { gum style --foreground 212 "$1"; }
-the_end() { gum style --foreground 212 "That's all for now then. Have a great day! :)" && exit 0; }
-try_again() { [[ "$?" -gt 0 ]] && "$1"; }
+say_err() { echo "Error: $1" >&2 && exit 1; }
+the_end() { echo "System update complete. Have a great day! :)" && exit 0; }
+
+show_help() {
+cat << EOF
+Usage: autup [-huf]
+
+Updates the system and removes orphaned packages.
+
+-h              Print this message and exit.
+-u              Update packages only.
+-f              Update packages and remove orphans.
+EOF
+}
+
 list_upgrades() {
 echo -e "----------------------------------------------------------------------
 [$(date +%F)]-[$(date +%H:%M)] ${1}: ${PKGS}
 ----------------------------------------------------------------------"
-if [[ "${PKGS}" -gt 0 ]]; then cat "${TEMP_LOG}"; else echo "Nothing for today."; fi
+if [[ "${PKGS}" -gt 0 ]]; then
+  cat "${TEMP_LOG}"
+else
+  echo "Nothing for today."
+fi
 echo -e "----------------------------------------------------------------------\n"
 }
 
-pretty_list() {
-DATE=$(gum style --align center --padding "0 2" --border normal --border-foreground 212 "[$(date +%F)]-[$(date +%H:%M)]")
-PKG_NUM=$(gum style --align center --padding "0 2" --border normal --border-foreground 212 "Updates Available: $(gum style --foreground 212 "${PKGS}")")
-HEADER=$(gum style --align center --padding "0 2" "$(gum join --align center --horizontal "$DATE" "$PKG_NUM")")
-PKG_LIST=$(gum style --align center --padding "1 1" "$(if [[ "${PKGS}" -gt 0 ]]; then cat "${TEMP_LOG}"; else say_msg "Nothing for today."; fi)")
-gum style --align center --padding "0 1" --border double --border-foreground 212 "$(gum join --align center --vertical "$HEADER" "$PKG_LIST")"
-}
-
-write_logs() {
-declare LOGS_DIR="${HOME}/.local/share/autup"
-declare LOGS="${LOGS_DIR}/autup.log"
+write_log() {
+declare -r LOGS_DIR="${HOME}/.local/share/autup"
+declare -r LOGS="${LOGS_DIR}/autup.log"
 [[ ! -d "${LOGS_DIR}" ]] && mkdir -p "${LOGS_DIR}"
-[[ ! -a "${LOGS}" ]] && touch "${LOGS}"
 { list_upgrades "Packages Upgraded"; } >> "${LOGS}"
 }
 
-logging() { [[ "${logging}" == "on" ]] && write_logs; }
-
 parse_log() {
 case $PKGMAN in
-pac) pacman -Qu 2> /dev/null | awk '{print $1" = ["$2"] -> ["$4"]"}' > "${TEMP_LOG}";;
-apt) apt list --upgradable 2> /dev/null | awk '/Listing/{next} split($1, pkg, "/", seps){print pkg[1]" = ["$6" -> ["$2"]"}' > "${TEMP_LOG}";;
-apk) apk list -u 2> /dev/null | awk 'match($0, /\:/){print "["substr($0, RSTART+2)" -> ["$1"]"}' > "${TEMP_LOG}";;
-dnf) dnf check-update 2> /dev/null > "${TEMP_LOG}";;
+  pac) pacman -Qu 2> /dev/null | awk '{print $1" = ["$2"] -> ["$4"]"}' > "${TEMP_LOG}" ;;
+  apk) apk list -u 2> /dev/null | awk 'match($0, /\:/){print "["substr($0, RSTART+2)" -> ["$1"]"}' > "${TEMP_LOG}" ;;
 esac
 PKGS=$(wc -l < "${TEMP_LOG}")
 }
 
 update_db() {
 case $PKGMAN in
-    pac) "$PERMS" pacman -Sy &> /dev/null;;
-    apt) "$PERMS" apt update &> /dev/null;;
-    apk) "$PERMS" apk update &> /dev/null;;
-    dnf) "$PERMS" dnf check-update &> /dev/null;;
+  pac) doas pacman -Sy &> /dev/null ;;
+  apk) doas apk update &> /dev/null ;;
 esac
 }
 
-upgrade_pkgs() {
-if [[ "${PKGS}" -gt 0 ]]; then
-    case $PKGMAN in
-        pac) "$PERMS" pacman -Su --noconfirm &> /dev/null;;
-        apt) "$PERMS" apt upgrade -y &> /dev/null;;
-        apk) "$PERMS" apk upgrade &> /dev/null;;
-        dnf) "$PERMS" dnf -y upgrade &> /dev/null;;
-    esac
-fi
+update_pkgs() {
+case $PKGMAN in
+  pac) doas pacman -Su --noconfirm &> /dev/null ;;
+  apk) doas apk upgrade &> /dev/null ;;
+esac
 }
 
 remove_orph() {
 case $PKGMAN in
-    pac) "$PERMS" pacman -Rns --noconfirm $(pacman -Qtdq) &> /dev/null;;
-    apt) "$PERMS" apt autoremove -y &> /dev/null;;
-    apk) "$PERMS" apk clean &> /dev/null;;
-    dnf) "$PERMS" dnf -y autoremove &> /dev/null;;
+  pac) doas pacman -Rns --noconfirm "$(pacman -Qtdq)" &> /dev/null ;;
+  apk) doas apk clean &> /dev/null ;;
 esac
 }
 
-prompt() {
-say_msg "What's it gonna be, Boss?"
-declare CHOICE=$(gum choose "Check Up" "Upgrade" "Clean Up" "Full Works" "Nothing")
-say_msg "$CHOICE"
-case $CHOICE in
-    "Check Up")
-        say_msg "Updating database..."; update_db; say_msg "Update complete."
-        parse_log
-        say_msg "Listing upgrades..."; pretty_list
-        prompt;;
-    "Upgrade")
-        say_msg "Updating database..."; update_db; say_msg "Update complete."
-        parse_log; logging
-        say_msg "Upgrading packages..."; upgrade_pkgs; say_msg "Upgrade complete."
-        prompt;;
-    "Clean Up")
-        say_msg "Removing orphans..."; remove_orph; say_msg "Removal complete."
-        prompt;;
-    "Full Works")
-        say_msg "Updating database..."; update_db; say_msg "Update complete."
-        parse_log; logging
-        say_msg "Upgrading packages..."; upgrade_pkgs; say_msg "Upgrade complete."
-        say_msg "Removing orphans..."; remove_orph; say_msg "Removal complete."
-        prompt;;
-    "Nothing")
-        the_end;;
-esac
-}
-
-get_usage() {
-echo -e "usage:  autup [option]
-options:
-    -u      upgrade all packages
-    -f      upgrade all packages and remove orphans
-
-Calling autup without any arguments will run it in interactive mode."
+update_all() {
+update_db
+parse_log
+write_log
+update_pkgs
 }
 
 main() {
-trap 'rm -rf "${TEMP_LOG}" && exit' EXIT HUP QUIT TERM INT ABRT
+[[ "$(id -u)" -eq 0 ]] && say_err "cannot be run as root."
 
-[[ "$(whoami)" == "root" ]] && say_err "root not allowed."
-[[ "$#" -gt 1 ]] && say_err "only one argument expected."
-
-if [[ -a /etc/pacman.conf ]]; then declare -r PKGMAN="pac"
-elif [[ -d /etc/apt ]]; then declare -r PKGMAN="apt"
-elif [[ -d /etc/apk ]]; then declare -r PKGMAN="apk"
-elif [[ -d /etc/dnf ]]; then declare -r PKGMAN="dnf"
-else say_err "no package manager found."
+if [[ -a "/etc/pacman.conf" ]]; then
+  declare -r PKGMAN="pac"
+elif [[ -d "/etc/apk" ]]; then
+  declare -r PKGMAN="apk"
+else
+  say_err "no package manager found."
 fi
 
-if [[ -a /etc/doas.conf ]]; then declare -r PERMS="doas"; else declare -r PERMS="sudo"; fi
-
-if [[ "$#" -gt 0 ]]; then
-    case "$1" in
-        -u) update_db; parse_log; logging; upgrade_pkgs;;
-        -f) update_db; parse_log; logging; upgrade_pkgs; remove_orph;;
-        *) get_usage;;
-    esac
-else prompt
+if [[ "$#" -lt 1 ]]; then
+  say_err "atleast one argument expected."
+elif [[ "$#" -gt 1 ]]; then
+  say_err "only one argument expected."
 fi
+
+TEMP_LOG="$(mktemp)" && declare -r TEMP_LOG
+declare -i PKGS=0
+
+while getopts ":huf" args; do
+  case $args in
+    h) show_help && exit 0 ;;
+    u) update_all ;;
+    f) update_all; remove_orph ;;
+    ?) say_err " $-{OPTARG} is not a valid argument." ;;
+  esac
+done
+shift $((OPTIND - 1))
 }
 
-##########################################################################
-# Script Start
-###############
+################
+# Script Start #
+################
 main "$@"
