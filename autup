@@ -38,7 +38,7 @@ declare -r LOGS="${LOGS_DIR}/autup.log"
 { list_upgrades "Packages Upgraded"; } >> "${LOGS}"
 }
 
-parse_log() {
+parse_upgrades() {
 case $PKGMAN in
   pac) pacman -Qu 2> /dev/null | awk '{print $1" = ["$2"] -> ["$4"]"}' > "${TEMP_LOG}" ;;
   apk) apk list -u 2> /dev/null | awk 'match($0, /\:/){print "["substr($0, RSTART+2)" -> ["$1"]"}' > "${TEMP_LOG}" ;;
@@ -48,30 +48,41 @@ PKGS=$(wc -l < "${TEMP_LOG}")
 
 update_db() {
 case $PKGMAN in
-  pac) doas pacman -Sy &> /dev/null ;;
-  apk) doas apk update &> /dev/null ;;
+  pac) doas pacman -Sy ;;
+  apk) doas apk update ;;
 esac
 }
 
 update_pkgs() {
 case $PKGMAN in
-  pac) doas pacman -Su --noconfirm &> /dev/null ;;
-  apk) doas apk upgrade &> /dev/null ;;
+  pac) doas pacman -Su --noconfirm ;;
+  apk) doas apk upgrade ;;
 esac
 }
 
 remove_orph() {
 case $PKGMAN in
-  pac) doas pacman -Rns --noconfirm "$(pacman -Qtdq)" &> /dev/null ;;
-  apk) doas apk clean &> /dev/null ;;
+  pac) doas pacman -Rns --noconfirm "$(pacman -Qtdq)" ;;
 esac
 }
 
-update_all() {
+check_up() {
 update_db
-parse_log
-write_log
-update_pkgs
+parse_upgrades
+list_upgrades "Updates Available"
+}
+
+upgrade_all() {
+check_up
+if [[ "${PKGS}" -gt 0 ]]; then
+  update_pkgs
+  write_log
+fi
+}
+
+full_service() {
+upgrade_all
+remove_orph
 }
 
 main() {
@@ -91,15 +102,16 @@ elif [[ "$#" -gt 1 ]]; then
   say_err "only one argument expected."
 fi
 
-TEMP_LOG="$(mktemp)" && declare -r TEMP_LOG
+TEMP_LOG="$(mktemp)"
 declare -i PKGS=0
 
-while getopts ":huf" args; do
+while getopts ":hcuf" args; do
   case $args in
     h) show_help && exit 0 ;;
-    u) update_all ;;
-    f) update_all; remove_orph ;;
-    ?) say_err " $-{OPTARG} is not a valid argument." ;;
+    c) check_up ;;
+    u) upgrade_all ;;
+    f) full_service ;;
+    ?) say_err "-${OPTARG} is not a valid argument." ;;
   esac
 done
 shift $((OPTIND - 1))
